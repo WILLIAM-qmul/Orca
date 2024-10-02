@@ -1,6 +1,5 @@
 from engine import ORCAExecutionEngine
 from threading import Thread
-import random
 import torch
 from enum import Enum
 from dataclasses import dataclass
@@ -105,7 +104,8 @@ class Scheduler:
                             completed_batch = batch
                             # Process the completed batch state updates
                             for req in completed_batch:
-                                if req.tokens_generated >= 2000:
+                                print(f"Number of tokens generated {req.tokens_generated}")
+                                if req.tokens_generated >= 20:
                                     n_rsrv -= req.max_tokens
                                     print(f"Request {req.request_id} completed.")
 
