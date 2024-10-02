@@ -1,26 +1,7 @@
-from engine import ORCAExecutionEngine
+from orca.engine_py.engine import ORCAExecutionEngine
 from threading import Thread
 import torch
-from enum import Enum
-from dataclasses import dataclass
-
-class RequestState(Enum):
-    INITIATION = 1
-    RUNNING = 2
-    INCREMENT = 3
-    COMPLETED = 4
-
-# Request Object
-@dataclass
-class Request: 
-    def __init__(self,  prompt: str, request_id: int = 0, max_tokens: int = 100):
-        self.state = RequestState.INITIATION
-        self.max_tokens = max_tokens
-        self.prompt = prompt
-        self.request_id = request_id
-        self.response = ""
-        self.tokens_generated = 0
-
+from models.request import Request, RequestState
 
 class Scheduler:
     def __init__(self, engine: ORCAExecutionEngine, n_workers: int = 4, max_batch_size: int = 16, n_kv_slots: int = 2000) -> None:
