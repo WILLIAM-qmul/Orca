@@ -1,5 +1,4 @@
 from enum import Enum
-from dataclasses import dataclass
 from pydantic import BaseModel
 
 class RequestState(Enum):
@@ -8,24 +7,24 @@ class RequestState(Enum):
     INCREMENT = 3
     COMPLETED = 4
 
-# Request Object
-@dataclass
-class Request(): 
-    def __init__(self,  prompt: str, request_id: int = 0, max_tokens: int = 100):
-        self.state = RequestState.INITIATION
-        self.max_tokens = max_tokens
-        self.prompt = prompt
-        self.request_id = request_id
-        self.response = ""
-        self.tokens_generated = 0
-        
-        
 ### Pydantic models
-class Scheduled_Iteration(BaseModel):
-    requests: list[Request]
-
-class Iteration_Responses(BaseModel):
-    responses: list[str]
+class Request(BaseModel): 
+    def __init__(self,  prompt: str, request_id: int = 0, max_tokens: int = 100):
+        self.state: RequestState | None = RequestState.INITIATION
+        self.max_tokens: int = max_tokens
+        self.prompt: str = prompt
+        self.request_id: int = request_id
+        self.response: str = ""
+        self.tokens_generated: int = 0
+        
+class Batch_Item(BaseModel):
+    prompt: str
+    request_id: int
+    batch_id: int
+    
+        
+class Batch(BaseModel):
+    requests: list[Batch_Item]
 
 class Prompt_Request(BaseModel):
     prompt: str

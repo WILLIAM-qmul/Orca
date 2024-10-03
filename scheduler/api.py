@@ -3,7 +3,7 @@ import uvicorn
 from pydantic import BaseModel
 from enum import Enum
 from dataclasses import dataclass
-from scheduler import Scheduler
+from orca.scheduler.scheduler import Scheduler
 import pandas as pd
 from models.request import Prompt_Request, Batch_Prompt_Request
 

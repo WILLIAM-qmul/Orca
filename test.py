@@ -1,7 +1,7 @@
-from scheduler import Request
+from orca.scheduler.scheduler import Request
 import pandas as pd
-from scheduler import Scheduler
-from engine import ORCAExecutionEngine
+from orca.scheduler.scheduler import Scheduler
+from orca.engine_py.engine import ORCAExecutionEngine
 
 def load_requests_from_csv(file_path: str, column: str) -> list[Request]:
     df = pd.read_csv(file_path)
