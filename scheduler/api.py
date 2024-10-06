@@ -3,25 +3,23 @@ import uvicorn
 from pydantic import BaseModel
 from enum import Enum
 from dataclasses import dataclass
-from orca.scheduler.scheduler import Scheduler
-import pandas as pd
-from models.request import Prompt_Request, Batch_Prompt_Request
+from scheduler.scheduler import OrcaScheduler
+from models.request import Prompt_Request
+from threading import Thread
 
 app = FastAPI()
 
-scheduler = Scheduler()
+scheduler = OrcaScheduler(n_workers=4, max_batch_size=4, max_n_kv_slots=2000)
+
+@app.on_event("startup")
+def start_background_tasks():
+    Thread(target=scheduler.schedule_requests, daemon=True).start()
     
 @app.post("/generate")
-def read_root(request: Prompt_Request):
-    scheduler.add_request(prompt=request.prompt)
-    return {"Hello World"}
+def process_request(request: Prompt_Request):
+    request_id = scheduler.add_request(prompt=request.prompt)
+    # should return once the request is completed:
 
-@app.post("/batch_process")
-def process_request(request: Batch_Prompt_Request):
-    # Process the request here
-    scheduler.add_request_batch(request.prompts)
-    return {"message": "Request processed successfully"}
-    
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

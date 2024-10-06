@@ -11,7 +11,7 @@ engine = ORCAExecutionEngine()
 llm = LLM(model="facebook/opt-125m", device="cpu")
 
 
-@app.post("/process_iteration_batch")
+@app.post("/process_batch")
 def process_iteration_batch(batch: Batch):
     # Process the request here
     # responses = engine.execute(requests)
