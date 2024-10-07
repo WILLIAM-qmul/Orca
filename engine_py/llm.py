@@ -56,7 +56,7 @@ class LLM:
             list[str]: List of generated texts
         """
         batch_response = []
-        for out in self.pipeline(prompts, batch_size=len(prompts)):
+        for out in self.pipeline(prompts, batch_size=len(prompts), max_length=1000):
             print(out)
             batch_response.append(out[0]['generated_text'])
         return batch_response
