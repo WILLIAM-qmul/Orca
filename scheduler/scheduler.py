@@ -68,9 +68,7 @@ class OrcaScheduler:
         """Select a batch of requests to process based on the current request pool and the number of reserved slots."""
         batch: dict[Request] = {}
         request_pool = [req for req in self.request_pool.values() if req.state != RequestState.RUNNING and req.state != RequestState.COMPLETED]
-        print(f"Request pool length: {len(request_pool)}")
         request_pool.sort(key=lambda x: x.request_id)
-        time.sleep(1)
 
         for req in request_pool:
             if len(batch) == self.MAX_BATCH_SIZE:
@@ -139,20 +137,15 @@ class OrcaScheduler:
             futures = {} # To store threads and their corresponding batches
 
             while True:
-                print(f"selecting batch")
                 batch = self.select()
 
-                if not batch:
-                    continue
-
-                futures[executor.submit(self.send_batch_to_engine, batch)] = batch
-                n_scheduled += 1
+                if batch:
+                    futures[executor.submit(self.send_batch_to_engine, batch)] = batch
+                    n_scheduled += 1
                 
                 # If all worker threads are engaged, wait for any thread to complete
-                print(f"Number of scheduled requests: {n_scheduled}, Number of n_workers: {self.n_workers}")
                 while n_scheduled >= self.n_workers:
                     completed_futures, _ = wait(futures.keys(), return_when='FIRST_COMPLETED')
-                    print(f"Completed {len(completed_futures)} requests")
                     for future in list(completed_futures):
                         self.process_batch_response(future=future, batch=futures[future])
                         del futures[future]
@@ -180,11 +173,12 @@ class OrcaScheduler:
         req = self.request_pool.get(request_id)
         if req is None:
             raise ValueError(f"Request with id {request_id} not found.")
-        if req.state != RequestState.COMPLETED:
-            req.wait_for_completion()
+        if req.state == RequestState.COMPLETED:
+            return req
+        req.wait_for_completion()
         return req
     
-    def remove_request(self, request_id: int) -> None:
+    def delete_request(self, request_id: int) -> None:
         """Remove a request from the request pool.
 
         Args:

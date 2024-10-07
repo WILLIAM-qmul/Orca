@@ -18,9 +18,12 @@ def start_background_tasks():
 @app.post("/generate")
 def process_request(request: Prompt_Request):
     request_id = scheduler.add_request(prompt=request.prompt)
+    print(f"Added request with request prompt: {request.prompt}")
     # should return once the request is completed:
     try:
+        print(f"waiting for request with request id {request_id} to complete")
         response = scheduler.get_completed_request(request_id).response
+        print(f"request with request id {request_id} completed")
         scheduler.delete_request(request_id)
         return {"response": response, "status_code": 200}
     except Exception as e:
