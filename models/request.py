@@ -1,5 +1,6 @@
 from enum import Enum
-from pydantic import BaseModel, Field
+from threading import Event
+from pydantic import BaseModel, Field, PrivateAttr
 
 class RequestState(Enum):
     INITIATION = 1
@@ -15,7 +16,18 @@ class Request(BaseModel):
     request_id: int = Field(default=0)
     response: str = Field(default="")
     tokens_generated: int = Field(default=0)
+    def __init__(self, **data: any):
+        super().__init__(**data)
+        self._request_completed_signal: Event = Event()  # Event to signal completion
+        
+    def wait_for_completion(self):
+        self._request_completed_signal.wait()
     
+    def mark_as_completed(self):
+        self.state = RequestState.COMPLETED
+        self._request_completed_signal.set()
+    
+
 class Batch_Item(BaseModel):
     prompt: str
     request_id: int

@@ -1,10 +1,11 @@
+import time
 from typing import Optional
 from engine_py.engine import ORCAExecutionEngine
 from threading import Thread
 from models.request import Batch, Batch_Item, Batch_Response, Batch_Response_Item, Request, RequestState
 import threading
 import requests
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 import json
 
 class OrcaScheduler:
@@ -22,10 +23,10 @@ class OrcaScheduler:
         current_request_id (int): The current request id that was assigned to the most recently added request.
         request_id_lock (threading.Lock): A lock to ensure the request id is incremented atomically.
     """
-    ENGINE_URL: str = "http://localhost:8080/process_batch"
+    ENGINE_URL: str = "http://0.0.0.0:8080/process_batch"
     
-    def __init__(self, engine: Optional[ORCAExecutionEngine] = None, n_workers: int = 4, max_batch_size: int = 16, max_n_kv_slots: int = 2000) -> None:
-        self.request_pool: list[Request] = []
+    def __init__(self, engine: Optional[ORCAExecutionEngine] = None, n_workers: int = 4, max_batch_size: int = 16, max_n_kv_slots: int = 10**5) -> None:
+        self.request_pool: dict[int, Request] = {}
         self.n_workers = n_workers
         self.engine = engine
         self.MAX_BATCH_SIZE = max_batch_size
@@ -58,7 +59,7 @@ class OrcaScheduler:
         request_id = self.increment_request_id()
         max_tokens = self.calculate_max_tokens(prompt)
         new_request = Request(prompt=prompt, max_tokens=max_tokens, request_id=request_id, state=RequestState.INITIATION)
-        self.request_pool.append(new_request)
+        self.request_pool[request_id] = new_request
         
         print(f"Request {self.current_request_id} submitted: {prompt[:30]}...")
         return request_id
@@ -66,22 +67,25 @@ class OrcaScheduler:
     def select(self) -> dict[Request]:
         """Select a batch of requests to process based on the current request pool and the number of reserved slots."""
         batch: dict[Request] = {}
-        request_pool = [req for req in self.request_pool if req.state != RequestState.RUNNING]
+        request_pool = [req for req in self.request_pool.values() if req.state != RequestState.RUNNING and req.state != RequestState.COMPLETED]
+        print(f"Request pool length: {len(request_pool)}")
         request_pool.sort(key=lambda x: x.request_id)
+        time.sleep(1)
 
         for req in request_pool:
             if len(batch) == self.MAX_BATCH_SIZE:
                 break
             if req.state == RequestState.INITIATION:
                 new_n_rsrv = self.n_kv_slots_rsrvd + req.max_tokens
+                print(f"New n_rsrv: {new_n_rsrv}, Max n_kv_slots: {self.max_n_kv_slots}")
                 if new_n_rsrv > self.max_n_kv_slots: 
                     break
                 self.n_kv_slots_rsrvd = new_n_rsrv
             batch[req.request_id] = req
-
+            
         return batch
     
-    def send_batch_to_engine(self, batch: dict[Request]):
+    def send_batch_to_engine(self, batch: dict[int, Request]):
         """
         Send a batch of requests to the execution engine for processing.
         
@@ -93,18 +97,19 @@ class OrcaScheduler:
             requests.exceptions.HTTPError: If the request to the execution engine fails.
         """
 
-        print(f"Scheduling batch of {len(batch)} requests")
-        engine_batch = Batch()
+        print(f"Scheduling batch of {len(batch.values())} requests")
+        req_list = []
         for req in batch.values():
-            engine_batch.requests.append(Batch_Item(prompt=req.prompt, request_id=req.request_id))
+            req_list.append(Batch_Item(prompt=req.prompt, request_id=req.request_id))
             req.state = RequestState.RUNNING
-        
-        response = requests.post(self.ENGINE_URL, json=engine_batch.model_dump_json())
+        engine_batch = Batch(requests=req_list)
+        response = requests.post(self.ENGINE_URL, json=engine_batch.model_dump())
         response.raise_for_status()
+        print(f"Received response from engine: {response.json()}")
         
         return response.json()
                 
-    def process_batch_response(self, future: Future, batch: dict[Request]):
+    def process_batch_response(self, future: Future, batch: dict[int, Request]):
         """Process the response from the execution engine for a batch of requests.
 
         Args:
@@ -112,15 +117,17 @@ class OrcaScheduler:
         """
         try:
             response = future.result()
-            response = Batch_Response(json.loads(response))
-            for response in response.responses:
-                batch[response.request_id].response += response.generated_tokens
-                if response.request_completed:
-                    batch[response.request_id].state = RequestState.COMPLETED
-                    self.n_kv_slots_rsrvd -= batch[response.request_id].max_tokens
-                    print(f"Request {response.request_id} completed.")
+            print(f"Processing response: {response}")
+            response = Batch_Response.model_validate(response)
+            for response_item in response.responses:
+                req = batch.get(response_item.request_id)
+                req.response += response_item.generated_tokens
+                if response_item.request_completed:
+                    self.n_kv_slots_rsrvd -= req.max_tokens
+                    print(f"Request {response_item.request_id} completed.")
+                    req.mark_as_completed()
                 else:
-                    batch[response.request_id].state = RequestState.INCREMENT
+                    req.state = RequestState.INCREMENT
         except Exception as e:
             print(f"Error processing batch: {e}")
 
@@ -132,6 +139,7 @@ class OrcaScheduler:
             futures = {} # To store threads and their corresponding batches
 
             while True:
+                print(f"selecting batch")
                 batch = self.select()
 
                 if not batch:
@@ -141,20 +149,46 @@ class OrcaScheduler:
                 n_scheduled += 1
                 
                 # If all worker threads are engaged, wait for any thread to complete
+                print(f"Number of scheduled requests: {n_scheduled}, Number of n_workers: {self.n_workers}")
                 while n_scheduled >= self.n_workers:
-                    future = next(as_completed(futures))
-                    self.process_batch_response(future=future, batch=futures[future])
-                    del futures[future]
-                    n_scheduled -= 1
-                    
-                    for future in futures:
-                        if future.done():
-                            self.process_batch_response(future=future, batch=futures[future])
-                            del futures[future]
-                            n_scheduled -= 1
+                    completed_futures, _ = wait(futures.keys(), return_when='FIRST_COMPLETED')
+                    print(f"Completed {len(completed_futures)} requests")
+                    for future in list(completed_futures):
+                        self.process_batch_response(future=future, batch=futures[future])
+                        del futures[future]
+                        n_scheduled -= 1
+                
+                for future in list(futures):
+                    if future.done():
+                        self.process_batch_response(future=future, batch=futures[future])
+                        del futures[future]
+                        n_scheduled -= 1
 
-                # Remove completed requests from the pool
-                request_pool = [req for req in self.request_pool if req.state != RequestState.COMPLETED]
+                print(f"Requests Yet To Be Processed: {len(self.request_pool)}")
+                
+    def get_completed_request(self, request_id: int) -> Request:
+        """Get the completed request from the request pool once it completes.
 
-                print(f"Requests Yet To Be Processed: {len(request_pool)}")
+        Args:
+            request_id (int): The id of the request to get.
+
+        Returns:
+            Request: The completed request if found in the request pool.
+        Raises:
+            ValueError: If the request with the specified id is not found in the request pool.
+        """
+        req = self.request_pool.get(request_id)
+        if req is None:
+            raise ValueError(f"Request with id {request_id} not found.")
+        if req.state != RequestState.COMPLETED:
+            req.wait_for_completion()
+        return req
+    
+    def remove_request(self, request_id: int) -> None:
+        """Remove a request from the request pool.
+
+        Args:
+            request_id (int): The id of the request to remove.
+        """
+        del self.request_pool[request_id]
             

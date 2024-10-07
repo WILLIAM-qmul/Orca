@@ -9,7 +9,7 @@ from threading import Thread
 
 app = FastAPI()
 
-scheduler = OrcaScheduler(n_workers=4, max_batch_size=4, max_n_kv_slots=2000)
+scheduler = OrcaScheduler(n_workers=4, max_batch_size=4, max_n_kv_slots=10**5)
 
 @app.on_event("startup")
 def start_background_tasks():
@@ -19,6 +19,13 @@ def start_background_tasks():
 def process_request(request: Prompt_Request):
     request_id = scheduler.add_request(prompt=request.prompt)
     # should return once the request is completed:
+    try:
+        response = scheduler.get_completed_request(request_id).response
+        scheduler.delete_request(request_id)
+        return {"response": response, "status_code": 200}
+    except Exception as e:
+        print(f"request with request id {request_id} got lost: {e}")
+        return {"response": "Error processing request", "status_code": 500}
 
 
 if __name__ == "__main__":

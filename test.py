@@ -24,20 +24,21 @@ def send_request(prompt):
     except Exception as e:
         print(f"Error: {e}")
 
-def simulate_user_requests(prompts: list[str], requests_per_second: int = 4, max_workers: int = 64) -> None:
+def simulate_user_requests(prompts: list[str], batch_size: int = 1, batch_freq: int = 1, max_workers: int = 64) -> None:
     """Generate requests to the API of the scheduler using the list of given prompts.
 
     Args:
         requests (list[str]): list of prompts to be sent to the API taken from a file or a list of prompts.
-        requests_per_second (int): specify the number of requests to be sent to the API per second.
+        batch_size (int): specify the number of requests to be sent to the API per batch_freqency.
+        batch_freq (int): specify how often (in seconds) a batch should be sent to the API.
     """
    
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for i in range(0, len(prompts), requests_per_second):
-            batch = prompts[i:i+requests_per_second]
+        for i in range(0, len(prompts), batch_size):
+            batch = prompts[i:i+batch_size]
             for prompt in batch:
                 executor.submit(send_request, prompt) 
-            time.sleep(1)
+            time.sleep(batch_freq)
     
 def directly_process_requests(requests: list[str]) -> None:
     """Directly process user requests using the ORCAExecutionEngine without api calls in between the modules
@@ -53,7 +54,7 @@ def directly_process_requests(requests: list[str]) -> None:
 
 def main() -> None:
     requests: list[str] = load_requests_from_csv("../experiments/samples.csv", 'conversation')
-    simulate_user_requests(requests, requests_per_second=4)
+    simulate_user_requests(requests,  batch_size=1, batch_freq=3)
 
 if __name__ == "__main__":
     main()
