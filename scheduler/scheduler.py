@@ -157,7 +157,7 @@ class OrcaScheduler:
                         del futures[future]
                         n_scheduled -= 1
 
-                print(f"Requests Yet To Be Processed: {len(self.request_pool)}")
+                #print(f"Requests Yet To Be Processed: {len(self.request_pool)}")
                 
     def get_completed_request(self, request_id: int) -> Request:
         """Get the completed request from the request pool once it completes.
