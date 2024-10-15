@@ -1,0 +1,24 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "FastAPI as Module",
+            "type": "python",
+            "request": "launch",
+            "module": "scheduler.api", // This should match the module path you use to run your app
+            "args": [],
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "UVICORN_RELOAD": "true" // Set this to "false" in production
+            },
+            "envFile": "${workspaceFolder}/.env",
+            "jinja": true,
+            "stopOnEntry": false,
+            "python": "${command:python.interpreterPath}",
+            "cwd": "${workspaceFolder}",
+            "internalConsoleOptions": "openOnSessionStart",
+            "subProcess": true // This enables debugging of sub-processes, such as threads
+        }
+    ]
+}
