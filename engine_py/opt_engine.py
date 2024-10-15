@@ -1,9 +1,13 @@
 from typing import Optional
 from .llm import LLM
 from .opt_decoder import OrcaOPTModel
+from .attention_kv_manager import AttentionKVManager
+from models.request import Batch_Item
 from transformers.models.opt.configuration_opt import OPTConfig
 from transformers import AutoTokenizer
 import torch
+from torch.nn.utils.rnn import pad_sequence
+import itertools
 
 class OPT_Engine():
     def __init__(self, model: Optional[OrcaOPTModel] = OrcaOPTModel(OPTConfig())) -> None:
@@ -18,6 +22,8 @@ class OPT_Engine():
         self.model.eval()
         self.tokenizer = AutoTokenizer.from_pretrained("facebook/opt-125m")
         self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.attention_kv_manager = AttentionKVManager()
+        
         
     def generate(self, prompt: str) -> str:
         """Generate text for the given prompts using the modified OPT model with selective batching.
@@ -32,112 +38,114 @@ class OPT_Engine():
         response = self.model.generate(prompt)
         return response
     
-    def batch_process(self, prompts: list[str], max_generation_length: int = 1) -> list[str]:
+    def batch_process(self, requests: list[Batch_Item], max_generation_length: int = 1) -> list[tuple[str, bool]]:
         """Process a batch of prompts using the modified OPT model with selective batching.
 
         Args:
             prompts (list[str]): List of prompts to process
 
         Returns:
-            list[str]: List of generated texts
+            list[tuple[str, bool]]: List of tuples containing generated texts (str) and a boolean flag indicating if the sequence is completed
         """
         # first we need to tokenize the prompts
+        prompts = [request.prompt for request in requests]
+        request_ids = [request.request_id for request in requests]
         encoded_inputs = self.tokenizer(prompts, return_tensors="pt", padding=True, truncation=True)
         input_ids = encoded_inputs['input_ids'].to(self.device)
         attention_mask = encoded_inputs['attention_mask'].to(self.device).bool()
         batch_size = input_ids.shape[0]
         
+       
+        
+        # get cached past_key_values and store as a batch
+        batch_past_key_values = []
+        for request_id in request_ids:
+            past_key_values = self.attention_kv_manager.get(request_id)
+            batch_past_key_values.append(past_key_values)
+            
+        per_request_input_ids = []
+        per_request_attention_mask = []
+        for i in range(batch_size):
+            per_request_input_ids.append(input_ids[i])
+            per_request_attention_mask.append(attention_mask[i])
+        
         unfinished_sequences = torch.ones(batch_size, dtype=torch.bool, device=self.device)
         generated_tokens = [[] for _ in range(batch_size)]  # Store generated tokens per sequence
-        
-        # Initialize past_key_values
-        past_key_values = None
-
-        # Initialize sequence lengths
-        sequence_lengths = attention_mask.sum(dim=1).tolist()
 
         # Generation loop
         for step in range(max_generation_length):
             # Prepare model inputs
-            # At each step, we only need to input the last generated token (incremental decoding)
-            if past_key_values is None:
-                # First step, use the full input_ids and attention_mask
-                model_inputs = {
-                    'input_ids': input_ids,
-                    'attention_mask': attention_mask,
-                    'past_key_values': past_key_values,
-                    'use_cache': True,
-                }
-            else:
-                # Subsequent steps, use only the last generated token
-                next_tokens = input_ids[:, -1].unsqueeze(-1)  # Shape: [batch_size, 1]
-                model_inputs = {
-                    'input_ids': next_tokens,
-                    'attention_mask': torch.ones_like(next_tokens, device=self.device),  # Only the new token
-                    'past_key_values': past_key_values,
-                    'use_cache': True,
-                }
-
-            # Forward pass
+            input_id_list = []
+            attention_mask_list = []
+            sequence_lengths = []
+            
+            for i in range(batch_size):
+                past_kv = batch_past_key_values[i]
+                if past_kv is None:
+                    input_id_list.append(per_request_input_ids[i])
+                    attention_mask_list.append(per_request_attention_mask[i])
+                else:
+                    last_token_id = per_request_input_ids[i][-1].unsqueeze(0)
+                    input_id_list.append(last_token_id)
+                    attention_mask_list.append(torch.ones_like(last_token_id, device=self.device))
+                sequence_lengths.append(len(input_id_list[-1]))
+            # pad sequences up to max length of the current batch
+            input_ids = pad_sequence(input_id_list, batch_first=True, padding_value=self.tokenizer.pad_token_id)
+            attention_mask_padded = pad_sequence(attention_mask_list, batch_first=True, padding_value=0)
+            model_inputs = {
+                'input_ids': input_ids,
+                'attention_mask': attention_mask_padded,
+                'past_key_values': batch_past_key_values,
+                'use_cache': True,
+            }
+            
+            # forward pass
             outputs = self.model(**model_inputs)
-
+            
+            # get the updated past_key_values
+            outputs_past_key_values = outputs.past_key_values # list of layers with each layer having tuple of (key tensor, value tensor)
+            num_layers = len(outputs_past_key_values)
+            batch_past_key_values = []
+            for i in range(batch_size):
+                seq_past_key_values = [outputs_past_key_values[layer_idx][i] for layer_idx in range(num_layers)]
+                batch_past_key_values.append(seq_past_key_values)
+            
+            
+            
             # Get logits for the last token
             logits = outputs.last_hidden_state  # Shape: [total_tokens, hidden_size]
-            hidden_size = logits.size(-1)
-
-            # Since we processed sequences individually, we need to map back the logits to sequences
-            # For simplicity, we assume that outputs.last_hidden_state contains the logits for the new tokens
-            # We'll reshape the logits to [batch_size, 1, hidden_size]
-            # Note: In practice, you may need to adjust this based on how hidden_states are returned
-
-            # In this simplified example, we'll simulate the output logits
-            logits = logits[-batch_size:]  # Get the last batch_size logits
-            logits = logits.view(batch_size, -1, hidden_size)  # Shape: [batch_size, seq_len=1, hidden_size]
-
-            # Compute probabilities and sample the next token (e.g., using greedy decoding)
-            next_token_logits = logits[:, -1, :]  # Shape: [batch_size, hidden_size]
+            last_token_index = [cum - 1 for cum in list(itertools.accumulate(sequence_lengths))]
+            next_token_logits = logits[last_token_index, :]
             next_token_ids = torch.argmax(next_token_logits, dim=-1)  # Shape: [batch_size]
-
-            # Add generated tokens to input_ids
-            input_ids = torch.cat([input_ids, next_token_ids.unsqueeze(-1)], dim=-1)  # Update input_ids
-
-            # Update attention_mask
-            new_attention_mask = torch.ones((batch_size, 1), dtype=torch.bool, device=self.device)
-            attention_mask = torch.cat([attention_mask, new_attention_mask], dim=1)
-
-            # Update sequence_lengths
-            sequence_lengths = [length + 1 if unfinished_sequences[i] else length for i, length in enumerate(sequence_lengths)]
-
-            # Update past_key_values
-            past_key_values = outputs.past_key_values
-
-            # Check for eos_token_id and update unfinished_sequences
-            for i, token_id in enumerate(next_token_ids):
-                if token_id.item() == self.tokenizer.eos_token_id:
-                    unfinished_sequences[i] = False
-
+            
+            # update input_ids and attention_mask and cache the past_key_values
+            for i in range(batch_size):
+                per_request_input_ids[i] = torch.cat([per_request_input_ids[i], next_token_ids[i].unsqueeze(0)], dim=0)
+                per_request_attention_mask[i] = torch.cat([per_request_attention_mask[i], torch.ones(1, device=self.device, dtype=torch.bool)], dim=0)
+                
                 if unfinished_sequences[i]:
-                    generated_tokens[i].append(token_id.item())
+                    generated_tokens[i].append(next_token_ids[i].item())
+                    # Check if the sequence is finished
+                    if next_token_ids[i].item() == self.tokenizer.eos_token_id:
+                        unfinished_sequences[i] = False
+                        self.attention_kv_manager.delete(request_ids[i])
+                    else:
+                        self.attention_kv_manager.store(request_ids[i], batch_past_key_values[i])
+                        
 
+            # Update input_ids with the new token
             # If all sequences are finished, break the loop
             if not unfinished_sequences.any():
                 break
 
-            # Optional: Remove finished sequences from further computation
-            # For sequences that are finished, we can skip updating them
-            # This would involve more complex indexing and is omitted for simplicity
 
         # Decode generated tokens to text
         generated_texts = []
         for i in range(batch_size):
-            # Get the tokens generated for this sequence
-            generated_sequence = input_ids[i, :].tolist()
-            # Decode the tokens (excluding the prompt)
-            prompt_length = encoded_inputs['input_ids'][i].size(0)
-            generated_tokens = generated_sequence[prompt_length:]
-            text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
-            generated_texts.append(text)
-
+            # Decode the generated tokens into readable text
+            text = self.tokenizer.decode(generated_tokens[i], skip_special_tokens=True)
+            request_completed = not unfinished_sequences[i]
+            generated_texts.append((text, request_completed))
         return generated_texts
 
         

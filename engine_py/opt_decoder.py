@@ -66,20 +66,20 @@ class OrcaOPTDecoderLayer(nn.Module):
             hidden_states = self.self_attn_layer_norm(hidden_states)
 
         # Split hidden_states per sequence
-        # Change: We split hidden_states according to sequence_lengths
+        # Changed!!!!
+        # _____________________________________________________
+        # We split hidden_states according to sequence_lengths
+        
         hidden_states_list = torch.split(hidden_states, sequence_lengths)
-
+        # _____________________________________________________
         # Process Attention per sequence
         attention_outputs = []
         self_attn_weights_list = []
         present_key_value_list = []
 
         # Change: Loop over each sequence and process attention individually
+        # TODO: Potentially refactor into a lambda function to parallelize
         for idx, hs in enumerate(hidden_states_list):
-            # attn_mask = attention_masks[idx]
-            # print(f"{attn_mask.dtype=}")
-            # print(f"{attn_mask.shape=}")
-            # print(f"{attn_mask=}")
             seq_len = hs.size(0) # hs has shape [seq_len, embed_dim]
             # Generate causal mask (attn_mask) of shape [seq_len, seq_len]
             attn_mask = torch.triu(torch.full((seq_len, seq_len), float('-inf')), diagonal=1).to(hs.device)
@@ -89,11 +89,18 @@ class OrcaOPTDecoderLayer(nn.Module):
             # Ensure key_padding_mask is of dtype torch.bool
             key_padding_mask = key_padding_mask.to(torch.bool)
             
+            # prepare past_key_values
+            past_kv = past_key_values[idx] if past_key_values is not None else None
+            if past_kv is not None:
+                past_key, past_value = past_kv
+            else:
+                past_key, past_value = None, None
+            
             hs = hs.unsqueeze(0)  # Add batch dimension
             
             # perform self-attention (not batched)
-            attn_output, attn_weights = self.self_attn(
-                hs, hs, hs, attn_mask=attn_mask, key_padding_mask=key_padding_mask, need_weights=output_attentions
+            attn_output, attn_weights, present_key_value = self._self_attention_with_past(
+                hs, attn_mask=attn_mask, key_padding_mask=key_padding_mask, past_key=past_key, past_value=past_value, need_weights=output_attentions, use_cache=use_cache 
             )
             
             attn_output = attn_output.squeeze(0)  # Remove batch dimension
@@ -104,10 +111,14 @@ class OrcaOPTDecoderLayer(nn.Module):
 
             # For simplicity, we are not implementing caching here
             if use_cache:
-                present_key_value_list.append(None)
+                present_key_value_list.append(present_key_value)
 
         # Concatenate the outputs from each sequence back into a single tensor
+        ## Changed: 
+        # Concatenate attention outputs from all sequences
+        # _____________________________________________________
         hidden_states = torch.cat(attention_outputs, dim=0)
+        # _____________________________________________________
         hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
         hidden_states = residual + hidden_states
 
@@ -136,6 +147,58 @@ class OrcaOPTDecoderLayer(nn.Module):
             outputs += (present_key_value_list,)
 
         return outputs
+    
+    def _self_attention_with_past(self, hidden_states, attn_mask: torch.Tensor, key_padding_mask, past_key=None, past_value=None, need_weights=False, use_cache=False):
+        """Helper function to perform self-attention with past key and value tensors
+
+        Args:
+            hidden_states (_type_): hidden states of shape [batch_size, seq_len, embed_dim] which are the layers' input
+            attn_mask (_type_): attention mask used for masking future tokens
+            key_padding_mask (_type_): key padding mask used to mask padding tokens
+            past_key (_type_, optional): Cached past key. Defaults to None.
+            past_value (_type_, optional): Cached past value. Defaults to None.
+            need_weigths (bool, optional): setting for needs weights. Defaults to False.
+            use_cache (bool, optional): setting to check if we are using cache. Defaults to False.
+
+        Returns:
+            _type_: _description_
+        """
+        query = hidden_states
+        key = hidden_states
+        value = hidden_states
+        if past_key is not None and past_value is not None:
+            key = torch.cat([past_key, key], dim=1)
+            value = torch.cat([past_value, value], dim=1)
+            
+            total_sequence_length = past_key.size(1) + hidden_states.size(1)
+            
+            target_seq_len = hidden_states.size(1)
+            src_len = total_sequence_length
+            attn_mask = torch.triu(torch.full((target_seq_len, src_len), float('-inf')), diagonal=1).to(attn_mask.device)
+            
+            # update key_padding_mask
+            if key_padding_mask is not None:
+                past_key_padding_mask = torch.zeros((1, total_sequence_length), dtype=torch.bool, device=hidden_states.device)
+                key_padding_mask = torch.cat([past_key_padding_mask], dim=1)
+        else:
+            target_seq_len = hidden_states.size(1)
+            src_seq_len = hidden_states.size(1)
+            attn_mask = torch.triu(torch.full((target_seq_len, src_seq_len), float('-inf')), diagonal=1).to(hidden_states.device)
+            
+
+        attn_output, attn_weights = self.self_attn(
+            query, key, value, attn_mask=attn_mask, key_padding_mask=key_padding_mask, need_weights=need_weights
+        )
+        
+        if use_cache:
+            present_key_value = (key, value)
+        else:
+            present_key_value = None
+        
+        return attn_output, attn_weights, present_key_value
+            
+            
+        
 
 # Modified OPTDecoder with selective batching
 class OrcaOPTDecoder(OPTPreTrainedModel):
@@ -228,8 +291,10 @@ class OrcaOPTDecoder(OPTPreTrainedModel):
         ]
 
         # Concatenate all hidden_states
-        # Change: Concatenate hidden_states from all sequences
+        # Changed: Concatenate hidden_states from all sequences
+        # _____________________________________________________
         hidden_states = torch.cat(hidden_states_list, dim=0)  # Shape: [total_tokens, hidden_size]
+        # _____________________________________________________
 
         # Prepare attention masks per sequence
         attention_masks_list = [
@@ -254,9 +319,16 @@ class OrcaOPTDecoder(OPTPreTrainedModel):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
-            past_key_values_layer = (
-                [pkv[idx] for pkv in past_key_values] if past_key_values is not None else [None] * batch_size
-            )
+            if past_key_values is None:
+                past_key_values_layer = [None] * batch_size
+            else:
+                past_key_values_layer = []
+                for pkv in past_key_values:
+                    if pkv is None:
+                        past_key_values_layer.append(None)
+                    else:
+                        past_key_values_layer.append(pkv[idx])
+            
 
             layer_outputs = decoder_layer(
                 hidden_states,
@@ -272,7 +344,8 @@ class OrcaOPTDecoder(OPTPreTrainedModel):
             hidden_states = layer_outputs[0]
 
             if use_cache:
-                next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
+                present_key_value = layer_outputs[2 if output_attentions else 1]
+                next_decoder_cache += (present_key_value,)
 
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
