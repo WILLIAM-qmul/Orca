@@ -4,20 +4,18 @@ from models.request import Batch, Batch_Response, Batch_Response_Item
 from .engine import ORCAExecutionEngine
 from .llm import LLM
 import json
-from .opt_engine import OPT_Engine
+from .llama_engine import Llama_Engine
 
 app = FastAPI()
 
 engine = ORCAExecutionEngine()
-opt_engine = OPT_Engine()
-llm = LLM(model="facebook/opt-125m", device="cpu")
-
+llama_engine = Llama_Engine(model_path="/home/lsl/wwg/models/Llama-2-7b-hf")
+# llm = LLM(model="/home/lsl/wwg/models/Llama-2-7b-hf", device="cuda")
 
 @app.post("/process_batch")
 def process_batch(batch: Batch) -> Batch_Response:
-    #responses = llm.batch_process(prompts=prompts)
     print(f"Received batch: {batch.requests}")
-    responses = opt_engine.batch_process(requests=batch.requests, max_generation_length=1)
+    responses = llama_engine.batch_process(requests=batch.requests, max_generation_length=1)
 
     if len(responses) == len(batch.requests):
         batch_response = [Batch_Response_Item(request_id=request.request_id, generated_tokens=text, request_completed=completed) for request, (text, completed) in zip(batch.requests, responses)]
