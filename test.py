@@ -72,7 +72,7 @@ def directly_process_requests(requests: list[str]) -> None:
 
 def main() -> None:
     # 主函数，加载csv并模拟用户请求
-    requests: list[str] = load_requests_from_csv("/home/lsl/wwg/orca/experiments/samples.csv", 'conversation')
+    requests: list[str] = load_requests_from_csv("/home/lsl/wwg/Orca/experiments/samples.csv", 'conversation')
     simulate_user_requests(requests,  batch_size=1, batch_freq=3) # 逐条、每3秒发送一次请求
 
 if __name__ == "__main__":

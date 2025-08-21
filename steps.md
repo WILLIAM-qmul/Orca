@@ -1,8 +1,19 @@
-你的项目是一个基于 FastAPI 的分布式推理系统，包含调度器（scheduler）和推理引擎（engine），需要分别启动两个服务。下面是详细的运行步骤：
+项目是一个基于 FastAPI 的分布式推理系统，包含调度器（scheduler）和推理引擎（engine），需要分别启动两个服务。下面是详细的运行步骤：
 
 ---
 
 ## 1. 安装依赖
+docker build -t orca -f docker/Dockerfile .
+docker run -it --name orca_env orca
+or
+docker run -it --name orca_env \
+  -v /home/lsl/wwg/Orca:/home/lsl/wwg/Orca \
+  orca
+
+docker rm orca_env
+docker start -ai orca_env
+
+docker exec -it orca_env bash
 
 确保你已安装 Python 3.8+ 和 pip。进入项目根目录，安装依赖（建议使用虚拟环境）：
 

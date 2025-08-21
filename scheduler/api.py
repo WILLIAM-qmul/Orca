@@ -11,7 +11,7 @@ app = FastAPI() # 创建FastAPI应用实例
 
 # 实例化调度器，设置4个worker，最大batch为4，最大KV缓存槽为10万
 # scheduler = OrcaScheduler(n_workers=4, max_batch_size=4, max_n_kv_slots=10**5)
-scheduler = OrcaScheduler(n_workers=1, max_batch_size=1, max_n_kv_slots=10**4)
+scheduler = OrcaScheduler(n_workers=1, max_batch_size=1, max_n_kv_slots=10**5)
 
 @app.on_event("startup")
 def start_background_tasks():
@@ -22,17 +22,17 @@ def start_background_tasks():
 def process_request(request: Prompt_Request):
     # 调用调度器添加请求，返回请求ID
     request_id = scheduler.add_request(prompt=request.prompt)
-    print(f"Added request with request prompt: {request.prompt}")
+    # print(f"Added request with request prompt: {request.prompt}")
     # should return once the request is completed:
     # 等待该请求完成后返回结果
     try:
-        print(f"waiting for request with request id {request_id} to complete")
+        # print(f"waiting for request with request id {request_id} to complete")
         response = scheduler.get_completed_request(request_id).response
-        print(f"request with request id {request_id} completed")
+        # print(f"request with request id {request_id} completed")
         scheduler.delete_request(request_id)
         return {"response": response, "status_code": 200}
     except Exception as e:
-        print(f"request with request id {request_id} got lost: {e}")
+        # print(f"request with request id {request_id} got lost: {e}")
         return {"response": "Error processing request", "status_code": 500}
 
 

@@ -51,6 +51,7 @@ class OrcaScheduler:
         self.current_request_id = 0 # 当前最新分配的请求ID
         self.request_id_lock = threading.Lock()
         self.request_lock = threading.Lock()
+        self.max_total_tokens = 50  # 新增：单请求最大累计生成token数
         
     def increment_request_id(self):
         # 原子操作，自增请求ID
@@ -140,28 +141,67 @@ class OrcaScheduler:
         
         return response.json()
                 
+    # def process_batch_response(self, future: Future, batch: dict[int, Request]):
+    #     """处理推理引擎返回的批量响应，更新请求池状态"""
+    #     """Process the response from the execution engine for a batch of requests.
+
+    #     Args:
+    #         future (Future): Future thread object representing the response from the execution engine.
+    #     """
+    #     try:
+    #         response = future.result() # 获取线程执行结果
+    #         print(f"Processing response: {response}")
+    #         response = Batch_Response.model_validate(response) # 校验并转为Batch_Response对象
+    #         print(f"{len(response.responses)} responses received.")
+    #         for response_item in response.responses:
+    #             with self.request_lock:
+    #                 req = self.request_pool.get(response_item.request_id) # 获取对应请求
+    #                 req.response += response_item.generated_tokens # 累加生成文本
+    #                 req.prompt += response_item.generated_tokens # 累加到prompt（用于增量生成）
+    #                 print(f"Request {response_item.request_id} response: {response_item.generated_tokens}, total request: {req.response}")
+    #                 if response_item.request_completed: # 如果已完成
+    #                     self.n_kv_slots_rsrvd -= req.max_tokens # 释放已预留槽数
+    #                     print(f"Request {response_item.request_id} completed.")
+    #                     req.mark_as_completed() # 标记为完成
+    #                 else:
+    #                     req.state = RequestState.INCREMENT
+    #     except Exception as e:
+    #         print(f"Error processing batch: {e}")
     def process_batch_response(self, future: Future, batch: dict[int, Request]):
         """处理推理引擎返回的批量响应，更新请求池状态"""
-        """Process the response from the execution engine for a batch of requests.
-
-        Args:
-            future (Future): Future thread object representing the response from the execution engine.
-        """
         try:
-            response = future.result() # 获取线程执行结果
+            response = future.result()
             print(f"Processing response: {response}")
-            response = Batch_Response.model_validate(response) # 校验并转为Batch_Response对象
+            response = Batch_Response.model_validate(response)
             print(f"{len(response.responses)} responses received.")
             for response_item in response.responses:
                 with self.request_lock:
-                    req = self.request_pool.get(response_item.request_id) # 获取对应请求
-                    req.response += response_item.generated_tokens # 累加生成文本
-                    req.prompt += response_item.generated_tokens # 累加到prompt（用于增量生成）
-                    print(f"Request {response_item.request_id} response: {response_item.generated_tokens}, total request: {req.response}")
-                    if response_item.request_completed: # 如果已完成
-                        self.n_kv_slots_rsrvd -= req.max_tokens # 释放已预留槽数
-                        print(f"Request {response_item.request_id} completed.")
-                        req.mark_as_completed() # 标记为完成
+                    req = self.request_pool.get(response_item.request_id)
+                    if req is None:
+                        continue
+                    
+                    new_fragment = response_item.generated_tokens
+                    req.response += new_fragment
+                    req.prompt += new_fragment
+
+                    # 统计新增token数（简单空格切分计数）
+                    added_tokens = 0
+                    if new_fragment.strip():
+                        added_tokens = len(new_fragment.strip().split())
+                    
+                    # 更新token计数
+                    req.tokens_generated = added_tokens  # 本次生成的token数
+                    req.total_tokens_generated += added_tokens  # 累计总生成token数
+
+                    print(f"Request {response_item.request_id} +{added_tokens} tokens (total {req.total_tokens_generated}/{self.max_total_tokens}), fragment: '{new_fragment}'")
+
+                    # 判定完成条件：引擎声明完成 或 累计生成token达到阈值
+                    reached_limit = req.total_tokens_generated >= self.max_total_tokens
+                    if response_item.request_completed or reached_limit:
+                        self.n_kv_slots_rsrvd -= req.max_tokens
+                        completion_reason = "engine_completed" if response_item.request_completed else "token_limit_reached"
+                        print(f"Request {response_item.request_id} completed ({completion_reason}). Total tokens: {req.total_tokens_generated}")
+                        req.mark_as_completed()
                     else:
                         req.state = RequestState.INCREMENT
         except Exception as e:

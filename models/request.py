@@ -16,6 +16,7 @@ class Request(BaseModel): # 单条请求的数据结构
     request_id: int = Field(default=0) # 请求ID，默认0
     response: str = Field(default="") # 已生成的响应文本，默认空
     tokens_generated: int = Field(default=0) # 已生成的token数，默认0
+    total_tokens_generated: int = Field(default=0) # 累计已生成的token总数，默认0
     def __init__(self, **data: any):
         super().__init__(**data)
         self._request_completed_signal: Event = Event()  # Event to signal completion # 创建线程事件，用于通知请求完成

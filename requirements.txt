@@ -27,7 +27,11 @@ typing_extensions==4.12.2
 tzdata==2024.2
 uvicorn==0.31.0
 
-pip install protobuf
-pip install google
-pip install sentencepiece
-pip install accelerate
+protobuf
+google
+sentencepiece
+accelerate
+
+transformers
+
+aiohttp
